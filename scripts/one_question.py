@@ -23,24 +23,29 @@ else:
     device, dtype = "cpu", torch.bfloat16
 
 print(f"loading {MODEL} on {device}...")
+# Load the tokenizer and model
 tok = AutoTokenizer.from_pretrained(MODEL)
 model = AutoModelForCausalLM.from_pretrained(MODEL, dtype=dtype).to(device).eval()
 letter_ids = [tok.encode(l, add_special_tokens=False)[0] for l in LETTERS]
 
+# Load the dataset
 ds = load_dataset("cais/mmlu", "all", split="test")
 i = int(sys.argv[1]) if len(sys.argv) > 1 else random.randrange(len(ds))
 ex = ds[i]
 
+# Generate the prompt
 opts = "\n".join(f"{L}. {c}" for L, c in zip(LETTERS, ex["choices"]))
 user = ("Answer the following multiple choice question. Reply with only the letter (A, B, C, or D).\n\n"
         f"Question: {ex['question']}\n{opts}")
 text = tok.apply_chat_template([{"role": "user", "content": user}], tokenize=False, add_generation_prompt=True)
 
+# Run the model and generate the logits
 with torch.no_grad():
     logits = model(**tok(text, return_tensors="pt").to(device)).logits[0, -1].float().cpu()
 probs = torch.softmax(logits[letter_ids], dim=0)
 pick, gold = int(probs.argmax()), ex["answer"]
 
+# Print the results
 print(f"\nMMLU #{i} ({ex['subject']})\n")
 print(f"Question: {ex['question']}\n{opts}\n")
 for L, p in zip(LETTERS, probs):
