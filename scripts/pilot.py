@@ -18,7 +18,7 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import roc_auc_score
 
-MODEL = sys.argv[1] if len(sys.argv) > 1 else "Qwen/Qwen2.5-0.5B-Instruct"
+MODEL = sys.argv[1] if len(sys.argv) > 1 else "Qwen/Qwen2.5-3B-Instruct"
 N = int(sys.argv[2]) if len(sys.argv) > 2 else 400
 LETTERS = ["A", "B", "C", "D"]
 device = "mps" if torch.backends.mps.is_available() else "cpu"
