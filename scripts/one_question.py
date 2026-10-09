@@ -4,7 +4,10 @@ Usage:
     python scripts/one_question.py          # random question
     python scripts/one_question.py 1234     # question #1234 of the MMLU test set
 """
-import sys, random
+import os, sys, random
+# Use the already-downloaded model and dataset; don't check Hugging Face for updates.
+# Must be set before importing datasets/transformers.
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
 import torch
 from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
