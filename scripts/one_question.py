@@ -31,7 +31,6 @@ ds = load_dataset("cais/mmlu", "all", split="test")
 i = int(sys.argv[1]) if len(sys.argv) > 1 else random.randrange(len(ds))
 ex = ds[i]
 
-# The fixed project prompt (DAIS_PROJECT_OVERVIEW.md, Section 4)
 opts = "\n".join(f"{L}. {c}" for L, c in zip(LETTERS, ex["choices"]))
 user = ("Answer the following multiple choice question. Reply with only the letter (A, B, C, or D).\n\n"
         f"Question: {ex['question']}\n{opts}")
