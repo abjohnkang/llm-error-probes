@@ -4,7 +4,10 @@ Grade MMLU questions by comparing the model's A/B/C/D scores to the answer key,
 save last-token hidden states from every layer at 3 stages, then train a
 logistic-regression probe per layer and compare it to the model's own confidence.
 """
-import sys, time, random
+import os, sys, time, random
+# Use the already-downloaded model and dataset; don't check Hugging Face for updates.
+# Must be set before importing datasets/transformers.
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
 import numpy as np
 import torch
 from datasets import load_dataset
