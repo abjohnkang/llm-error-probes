@@ -3,7 +3,16 @@
 Grade MMLU questions by comparing the model's A/B/C/D scores to the answer key,
 save last-token hidden states from every layer at 3 stages, then train a
 logistic-regression probe per layer and compare it to the model's own confidence.
+
+Flow: load model -> sample questions -> 3 passes per question (save hidden
+states + grade) -> baseline AUROC -> train/score probes -> print results.
 """
+
+# ---------------------------------------------------------------------------
+# 1. Imports
+# torch runs the model, transformers loads it, datasets loads MMLU,
+# sklearn trains and scores the probes.
+# ---------------------------------------------------------------------------
 import os, sys, time, random
 # Use the already-downloaded model and dataset; don't check Hugging Face for updates.
 # Must be set before importing datasets/transformers.
@@ -18,24 +27,53 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import roc_auc_score
 
+# ---------------------------------------------------------------------------
+# 2. Settings
+# Usage: python scripts/pilot.py [model] [N]
+# Uses Apple's GPU (mps) if available, otherwise the CPU.
+# ---------------------------------------------------------------------------
 MODEL = sys.argv[1] if len(sys.argv) > 1 else "Qwen/Qwen2.5-3B-Instruct"
 N = int(sys.argv[2]) if len(sys.argv) > 2 else 400
 LETTERS = ["A", "B", "C", "D"]
 device = "mps" if torch.backends.mps.is_available() else "cpu"
 
+# ---------------------------------------------------------------------------
+# 3. Load the model
+# The tokenizer turns text into token IDs. float16 halves memory use.
+# .eval() puts the model in inference mode (no training).
+# ---------------------------------------------------------------------------
 t0 = time.time()
 tok = AutoTokenizer.from_pretrained(MODEL)
 model = AutoModelForCausalLM.from_pretrained(MODEL, dtype=torch.float16).to(device).eval()
 n_layers = model.config.num_hidden_layers
 print(f"model={MODEL} layers={n_layers} hidden={model.config.hidden_size} device={device} load={time.time()-t0:.0f}s")
 
+# ---------------------------------------------------------------------------
+# 4. Token IDs for A/B/C/D
+# We read the model's score for these 4 tokens to see which letter it picks.
+# The assert checks each letter is exactly one token.
+# ---------------------------------------------------------------------------
 letter_ids = [tok.encode(l, add_special_tokens=False) for l in LETTERS]
 assert all(len(x) == 1 for x in letter_ids), letter_ids
 letter_ids = [x[0] for x in letter_ids]
 
+# ---------------------------------------------------------------------------
+# 5. Load MMLU and pick N random questions
+# Random(0) fixes the seed, so every run uses the same questions.
+# ---------------------------------------------------------------------------
 ds = load_dataset("cais/mmlu", "all", split="test")
 idx = random.Random(0).sample(range(len(ds)), N)
 
+# ---------------------------------------------------------------------------
+# 6. Helpers
+# chat(): wrap text in the model's chat format, as if a user sent it.
+#   assistant_prefix pre-fills the start of the model's reply (used in stage 3).
+# run(): one forward pass. Returns
+#   - logits: the model's score for every possible next token
+#   - hs: last-token hidden state from every layer, shape (layers+1, hidden)
+#     (+1 because index 0 is the embedding layer)
+#   @torch.no_grad() skips gradient tracking -> faster, less memory.
+# ---------------------------------------------------------------------------
 def chat(user, assistant_prefix=""):
     msgs = [{"role": "user", "content": user}]
     return tok.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True) + assistant_prefix
@@ -48,6 +86,13 @@ def run(text):
     hs = torch.stack([h[0, -1] for h in out.hidden_states]).float().cpu().numpy()
     return out.logits[0, -1].float().cpu(), hs
 
+# ---------------------------------------------------------------------------
+# 7. Main loop: 3 passes per question
+# For each question we save hidden states at 3 stages and grade the answer.
+# labels: 1 = wrong, 0 = right (this is what the probe learns to predict)
+# conf: the model's probability for the letter it picked (the baseline)
+# feats[stage]: list of hidden-state arrays, one per question
+# ---------------------------------------------------------------------------
 labels, conf, top_is_letter, subjects = [], [], [], []
 feats = {1: [], 2: [], 3: []}
 t1 = time.time()
@@ -60,6 +105,7 @@ for k, i in enumerate(idx):
     _, hs1 = run(chat(f"Question: {ex['question']}"))
     # Stage 2: question + options -> this pass also GRADES the model
     logits, hs2 = run(chat(instr + f"Question: {ex['question']}\n{opts}"))
+    # Softmax over just the 4 letter scores -> probabilities for A/B/C/D
     probs = torch.softmax(logits[letter_ids], dim=0)
     pick = int(probs.argmax())
     # Stage 3: after the model commits to its letter
@@ -67,28 +113,47 @@ for k, i in enumerate(idx):
 
     labels.append(int(pick != ex["answer"]))  # 1 = wrong, 0 = right
     conf.append(float(probs.max()))
+    # Sanity check: was the model's overall top token actually a letter?
     top_is_letter.append(int(logits.argmax()) in letter_ids)
     subjects.append(ex["subject"])
     feats[1].append(hs1); feats[2].append(hs2); feats[3].append(hs3)
+    # After 10 questions, estimate how long the full run will take
     if k == 9:
         per = (time.time() - t1) / 10
         print(f"~{per:.2f}s per question (3 passes) -> est. {per*N/60:.1f} min for N={N}")
 
+# ---------------------------------------------------------------------------
+# 8. Summary stats
+# ---------------------------------------------------------------------------
 y = np.array(labels)
 print(f"\nextraction time {time.time()-t1:.0f}s")
 print(f"accuracy {1-y.mean():.3f}  (wrong={y.sum()}, right={len(y)-y.sum()})")
 print(f"model's top token was one of A/B/C/D: {np.mean(top_is_letter):.1%}")
 print(f"feature size per stage: {np.array(feats[2]).nbytes/1e6:.1f} MB for {N} questions")
 
-# Baseline: the model's own confidence (low confidence -> predict wrong)
+# ---------------------------------------------------------------------------
+# 9. Baseline: use the model's own confidence as the wrong-answer detector
+# AUROC: 0.5 = chance, 1.0 = perfect. Minus sign: lower confidence -> more likely wrong.
+# ---------------------------------------------------------------------------
 print(f"\nBASELINE output-confidence AUROC: {roc_auc_score(y, -np.array(conf)):.3f}")
 
+# ---------------------------------------------------------------------------
+# 10. Probe: logistic regression on hidden states -> predict wrong vs. right
+# StandardScaler normalizes each feature. C=0.01 = strong regularization
+# (keeps the probe from memorizing). 5-fold cross-validation: each question
+# is scored by a probe that never saw it during training.
+# ---------------------------------------------------------------------------
 cv = StratifiedKFold(5, shuffle=True, random_state=0)
 def probe_auc(X):
     clf = make_pipeline(StandardScaler(), LogisticRegression(C=0.01, max_iter=2000))
     p = cross_val_predict(clf, X, y, cv=cv, method="predict_proba")[:, 1]
     return roc_auc_score(y, p)
 
+# ---------------------------------------------------------------------------
+# 11. Train and score a probe for each stage x ~9 evenly spaced layers
+# One printed row per stage. Probe AUROC above the baseline means the hidden
+# states know more about the mistake than the model's confidence shows.
+# ---------------------------------------------------------------------------
 layers = sorted(set(np.linspace(0, n_layers, 9).astype(int)))
 for stage, name in [(1, "question only"), (2, "question+options"), (3, "after answer")]:
     X = np.array(feats[stage])
