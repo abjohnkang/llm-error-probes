@@ -39,10 +39,14 @@ parser.add_argument("--n", type=int, default=200, help="number of questions")
 parser.add_argument("--seed", type=int, default=0, help="random seed for picking questions")
 parser.add_argument("--model", default="Qwen/Qwen2.5-3B-Instruct")
 parser.add_argument("--out", default=None, help="output folder (default: data/<model>_n<N>_seed<seed>)")
+parser.add_argument("--force", action="store_true", help="redo the extraction even if the folder already has data")
 args = parser.parse_args()
 
 run_name = f"{args.model.split('/')[-1].lower()}_n{args.n}_seed{args.seed}"
 out = args.out or os.path.join("data", run_name)
+# meta.csv is written last, so if it exists the run finished. Don't overwrite it by accident.
+if os.path.exists(os.path.join(out, "meta.csv")) and not args.force:
+    sys.exit(f"{out}/ is already extracted. Use --force to redo it.")
 os.makedirs(out, exist_ok=True)
 
 if torch.cuda.is_available():
