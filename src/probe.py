@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
+from sklearn.model_selection import cross_val_predict
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
@@ -38,6 +39,11 @@ print(f"train {train.sum()}  val {val.sum()}  test {test.sum()}")
 # ---------------------------------------------------------------------------
 conf = -meta.confidence.values
 base, base_lo, base_hi = auroc_ci(y[test], conf[test])
+
+def logit(p):
+    """Probability -> log-odds. Spreads out values near 0 and 1."""
+    p = np.clip(p, 1e-6, 1 - 1e-6)
+    return np.log(p / (1 - p))
 print(f"BASELINE confidence AUROC {base:.3f}  [{base_lo:.2f}, {base_hi:.2f}]\n")
 
 # ---------------------------------------------------------------------------
@@ -74,7 +80,28 @@ for stage, name in [(1, "question only"), (2, "question+options"), (3, "after an
     # If the whole interval is above 0, the probe wins.
     diff, d_lo, d_hi, p = paired_diff_ci(y[test], test_preds[int(best.layer)], conf[test])
     print(f"  probe - confidence: {diff:+.3f}  [{d_lo:+.3f}, {d_hi:+.3f}]  p={p:.3f}")
-    bests.append({**best.to_dict(), "stage": stage, "layer": int(best.layer), "diff_vs_conf": diff, "diff_low": d_lo, "diff_high": d_hi, "p": p})
+
+    # Combined detector ("stacking"): a tiny second model that combines two numbers,
+    # the probe's prediction and confidence, and learns how much to trust each.
+    # If it beats confidence alone, the hidden states add something confidence doesn't have.
+    # It learns from the probe's predictions on TRAIN questions, made with 5-fold
+    # cross-validation so each one comes from a probe that never saw that question.
+    # (The probe's predictions on its own training questions are too good, and the
+    # combiner would trust them too much.)
+    # Both numbers go in as log-odds, then get standardized, so neither one is
+    # ignored just because its values are spread over a smaller range.
+    Xl = np.asarray(X[:, int(best.layer)], dtype=np.float32)
+    probe = make_pipeline(StandardScaler(), LogisticRegression(C=0.01, max_iter=2000))
+    train_preds = cross_val_predict(probe, Xl[train], y[train], cv=5, method="predict_proba")[:, 1]
+    conf_lo = logit(meta.confidence.values)
+    combo = make_pipeline(StandardScaler(), LogisticRegression())
+    combo.fit(np.column_stack([logit(train_preds), conf_lo[train]]), y[train])
+    combo_preds = combo.predict_proba(np.column_stack([logit(test_preds[int(best.layer)]), conf_lo[test]]))[:, 1]
+    c_auc, c_lo, c_hi = auroc_ci(y[test], combo_preds)
+    print(f"  combined (layer + confidence): test AUROC {c_auc:.3f}  [{c_lo:.2f}, {c_hi:.2f}]")
+
+    bests.append({**best.to_dict(), "stage": stage, "layer": int(best.layer), "diff_vs_conf": diff, "diff_low": d_lo, "diff_high": d_hi, "p": p,
+                  "combo_auroc": c_auc, "combo_ci_low": c_lo, "combo_ci_high": c_hi})
 
 # ---------------------------------------------------------------------------
 # 4. Save
