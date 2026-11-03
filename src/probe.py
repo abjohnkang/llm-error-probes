@@ -14,6 +14,7 @@ import os, sys, json
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import roc_auc_score
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
@@ -27,9 +28,10 @@ meta = pd.read_csv(os.path.join(folder, "meta.csv"))
 with open(os.path.join(folder, "splits.json")) as f:
     splits = json.load(f)
 train = meta.qid.isin(splits["train"]).values  # True/False per row
+val = meta.qid.isin(splits["val"]).values
 test = meta.qid.isin(splits["test"]).values
 y = meta.label.values                          # 1 = wrong, 0 = right
-print(f"train {train.sum()}  test {test.sum()}")
+print(f"train {train.sum()}  val {val.sum()}  test {test.sum()}")
 
 # ---------------------------------------------------------------------------
 # 2. Baseline: the model's own confidence (minus sign: low confidence -> likely wrong)
@@ -49,9 +51,12 @@ for stage, name in [(1, "question only"), (2, "question+options"), (3, "after an
         Xl = np.asarray(X[:, layer], dtype=np.float32)
         probe = make_pipeline(StandardScaler(), LogisticRegression(C=0.01, max_iter=2000))
         probe.fit(Xl[train], y[train])
+        # Val score: used later to choose the best layer without looking at test
+        val_auc = roc_auc_score(y[val], probe.predict_proba(Xl[val])[:, 1])
         p_wrong = probe.predict_proba(Xl[test])[:, 1]
         auc, lo, hi = auroc_ci(y[test], p_wrong)
-        results.append({"stage": stage, "layer": layer, "auroc": auc, "ci_low": lo, "ci_high": hi})
+        results.append({"stage": stage, "layer": layer, "val_auroc": val_auc,
+                        "auroc": auc, "ci_low": lo, "ci_high": hi})
 
     # Print every 4th layer plus the best one
     df = pd.DataFrame([r for r in results if r["stage"] == stage])
