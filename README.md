@@ -80,5 +80,4 @@ git pull
 ## Repo layout
 
 - `scripts/`: `one_question.py` (demo) and `pilot.py` (proof of concept for the full pipeline)
-- `results/predicted_errors/`: each member's predicted model mistake (see `EXAMPLE.md`)
 - `requirements.txt`: exact package versions
