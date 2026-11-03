@@ -18,7 +18,7 @@ from sklearn.metrics import roc_auc_score
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
-from evaluate import auroc_ci
+from evaluate import auroc_ci, paired_diff_ci
 
 # ---------------------------------------------------------------------------
 # 1. Load the saved data (no model needed)
@@ -36,7 +36,8 @@ print(f"train {train.sum()}  val {val.sum()}  test {test.sum()}")
 # ---------------------------------------------------------------------------
 # 2. Baseline: the model's own confidence (minus sign: low confidence -> likely wrong)
 # ---------------------------------------------------------------------------
-base, base_lo, base_hi = auroc_ci(y[test], -meta.confidence.values[test])
+conf = -meta.confidence.values
+base, base_lo, base_hi = auroc_ci(y[test], conf[test])
 print(f"BASELINE confidence AUROC {base:.3f}  [{base_lo:.2f}, {base_hi:.2f}]\n")
 
 # ---------------------------------------------------------------------------
@@ -44,9 +45,10 @@ print(f"BASELINE confidence AUROC {base:.3f}  [{base_lo:.2f}, {base_hi:.2f}]\n")
 # C=0.01 = strong regularization, same as the pilot. Choosing C on the val
 # split comes later.
 # ---------------------------------------------------------------------------
-results = []
+results, bests = [], []
 for stage, name in [(1, "question only"), (2, "question+options"), (3, "after answer")]:
     X = np.load(os.path.join(folder, f"stage{stage}.npy"), mmap_mode="r")
+    test_preds = {}  # layer -> the probe's test predictions, kept for the comparison below
     for layer in range(X.shape[1]):
         Xl = np.asarray(X[:, layer], dtype=np.float32)
         probe = make_pipeline(StandardScaler(), LogisticRegression(C=0.01, max_iter=2000))
@@ -54,6 +56,7 @@ for stage, name in [(1, "question only"), (2, "question+options"), (3, "after an
         # Val score: used later to choose the best layer without looking at test
         val_auc = roc_auc_score(y[val], probe.predict_proba(Xl[val])[:, 1])
         p_wrong = probe.predict_proba(Xl[test])[:, 1]
+        test_preds[layer] = p_wrong
         auc, lo, hi = auroc_ci(y[test], p_wrong)
         results.append({"stage": stage, "layer": layer, "val_auroc": val_auc,
                         "auroc": auc, "ci_low": lo, "ci_high": hi})
@@ -67,6 +70,12 @@ for stage, name in [(1, "question only"), (2, "question+options"), (3, "after an
     print(f"stage {stage} ({name:16s}) {row}")
     print(f"  best (chosen on val): layer {int(best.layer)}  test AUROC {best.auroc:.3f}  [{best.ci_low:.2f}, {best.ci_high:.2f}]")
 
+    # Does the chosen layer beat confidence? Paired bootstrap on the same test questions.
+    # If the whole interval is above 0, the probe wins.
+    diff, d_lo, d_hi, p = paired_diff_ci(y[test], test_preds[int(best.layer)], conf[test])
+    print(f"  probe - confidence: {diff:+.3f}  [{d_lo:+.3f}, {d_hi:+.3f}]  p={p:.3f}")
+    bests.append({**best.to_dict(), "stage": stage, "layer": int(best.layer), "diff_vs_conf": diff, "diff_low": d_lo, "diff_high": d_hi, "p": p})
+
 # ---------------------------------------------------------------------------
 # 4. Save
 # ---------------------------------------------------------------------------
@@ -75,5 +84,6 @@ os.makedirs(out, exist_ok=True)
 df = pd.DataFrame(results)
 df.insert(0, "baseline_confidence", base)
 df.to_csv(os.path.join(out, "probe_layers.csv"), index=False)
-print(f"\nsaved {out}/probe_layers.csv")
+pd.DataFrame(bests).to_csv(os.path.join(out, "probe_best.csv"), index=False)  # one row per stage
+print(f"\nsaved {out}/probe_layers.csv and probe_best.csv")
 print("Note: with few val/test questions the chosen layer and intervals are unreliable. Read them on the full run.")
