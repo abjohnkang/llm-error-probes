@@ -27,3 +27,29 @@ def auroc_ci(y, score, n_boot=1000, seed=0):
         boots.append(roc_auc_score(y[i], score[i]))
     low, high = np.percentile(boots, [2.5, 97.5])
     return auc, low, high
+
+
+def paired_diff_ci(y, score_a, score_b, n_boot=1000, seed=0):
+    """Compare two scores on the SAME questions. Return (diff, low, high, p).
+
+    diff = AUROC(a) - AUROC(b). Paired bootstrap: each resample picks one set
+    of questions and scores both a and b on it, so the luck of which questions
+    were picked cancels out. If the whole interval [low, high] is above 0,
+    a beats b.
+
+    p = share of resamples where a did NOT beat b (one-sided).
+    With 1,000 resamples, p = 0 means p < 0.001.
+    """
+    y, a, b = np.asarray(y), np.asarray(score_a), np.asarray(score_b)
+    diff = roc_auc_score(y, a) - roc_auc_score(y, b)
+    rng = np.random.default_rng(seed)
+    boots = []
+    for _ in range(n_boot):
+        i = rng.integers(0, len(y), len(y))
+        if y[i].min() == y[i].max():  # resample has only right or only wrong answers -> skip
+            continue
+        boots.append(roc_auc_score(y[i], a[i]) - roc_auc_score(y[i], b[i]))
+    boots = np.array(boots)
+    low, high = np.percentile(boots, [2.5, 97.5])
+    p = float((boots <= 0).mean())
+    return diff, low, high, p
