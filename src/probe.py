@@ -58,12 +58,14 @@ for stage, name in [(1, "question only"), (2, "question+options"), (3, "after an
         results.append({"stage": stage, "layer": layer, "val_auroc": val_auc,
                         "auroc": auc, "ci_low": lo, "ci_high": hi})
 
-    # Print every 4th layer plus the best one
+    # Print every 4th layer plus the best one.
+    # The best layer is chosen by its VAL score, then reported with its TEST score.
+    # Picking the top test score out of 37 layers would be a little lucky (too high).
     df = pd.DataFrame([r for r in results if r["stage"] == stage])
-    best = df.loc[df.auroc.idxmax()]
+    best = df.loc[df.val_auroc.idxmax()]
     row = "  ".join(f"L{r.layer}:{r.auroc:.2f}" for r in df.itertuples() if r.layer % 4 == 0)
     print(f"stage {stage} ({name:16s}) {row}")
-    print(f"  best: layer {int(best.layer)}  AUROC {best.auroc:.3f}  [{best.ci_low:.2f}, {best.ci_high:.2f}]")
+    print(f"  best (chosen on val): layer {int(best.layer)}  test AUROC {best.auroc:.3f}  [{best.ci_low:.2f}, {best.ci_high:.2f}]")
 
 # ---------------------------------------------------------------------------
 # 4. Save
@@ -74,4 +76,4 @@ df = pd.DataFrame(results)
 df.insert(0, "baseline_confidence", base)
 df.to_csv(os.path.join(out, "probe_layers.csv"), index=False)
 print(f"\nsaved {out}/probe_layers.csv")
-print("Note: with few test questions the intervals are wide. Don't pick a 'best layer' from a small run.")
+print("Note: with few val/test questions the chosen layer and intervals are unreliable. Read them on the full run.")
