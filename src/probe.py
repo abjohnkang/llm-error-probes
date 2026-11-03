@@ -35,9 +35,14 @@ y = meta.label.values                          # 1 = wrong, 0 = right
 print(f"train {train.sum()}  val {val.sum()}  test {test.sum()}")
 
 # ---------------------------------------------------------------------------
-# 2. Baseline: the model's own confidence (minus sign: low confidence -> likely wrong)
+# 2. Baseline: the model's own confidence
+# About a third of answers have confidence saved as exactly 1.0 (rounded), so
+# raw confidence can't rank them. Instead we use log(sum of the other 3 letters'
+# probabilities) = log(1 - confidence), computed precisely.
+# Higher = less confident -> more likely wrong.
 # ---------------------------------------------------------------------------
-conf = -meta.confidence.values
+probs = np.sort(meta[["pA", "pB", "pC", "pD"]].values, axis=1)
+conf = np.log(probs[:, :3].sum(axis=1))
 base, base_lo, base_hi = auroc_ci(y[test], conf[test])
 
 def logit(p):
@@ -88,15 +93,15 @@ for stage, name in [(1, "question only"), (2, "question+options"), (3, "after an
     # cross-validation so each one comes from a probe that never saw that question.
     # (The probe's predictions on its own training questions are too good, and the
     # combiner would trust them too much.)
-    # Both numbers go in as log-odds, then get standardized, so neither one is
-    # ignored just because its values are spread over a smaller range.
+    # Both numbers go in on a log scale (probe as log-odds, conf is already a log),
+    # then get standardized, so neither one is ignored just because its values are
+    # spread over a smaller range.
     Xl = np.asarray(X[:, int(best.layer)], dtype=np.float32)
     probe = make_pipeline(StandardScaler(), LogisticRegression(C=0.01, max_iter=2000))
     train_preds = cross_val_predict(probe, Xl[train], y[train], cv=5, method="predict_proba")[:, 1]
-    conf_lo = logit(meta.confidence.values)
     combo = make_pipeline(StandardScaler(), LogisticRegression())
-    combo.fit(np.column_stack([logit(train_preds), conf_lo[train]]), y[train])
-    combo_preds = combo.predict_proba(np.column_stack([logit(test_preds[int(best.layer)]), conf_lo[test]]))[:, 1]
+    combo.fit(np.column_stack([logit(train_preds), conf[train]]), y[train])
+    combo_preds = combo.predict_proba(np.column_stack([logit(test_preds[int(best.layer)]), conf[test]]))[:, 1]
     c_auc, c_lo, c_hi = auroc_ci(y[test], combo_preds)
     print(f"  combined (layer + confidence): test AUROC {c_auc:.3f}  [{c_lo:.2f}, {c_hi:.2f}]")
 
