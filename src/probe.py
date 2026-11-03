@@ -100,8 +100,18 @@ for stage, name in [(1, "question only"), (2, "question+options"), (3, "after an
     c_auc, c_lo, c_hi = auroc_ci(y[test], combo_preds)
     print(f"  combined (layer + confidence): test AUROC {c_auc:.3f}  [{c_lo:.2f}, {c_hi:.2f}]")
 
+    # Does the combination beat each part on its own? Same paired bootstrap as above.
+    # Beats confidence -> the hidden states add something confidence doesn't have.
+    # Beats the probe  -> confidence adds something the probe doesn't have.
+    cc, cc_lo, cc_hi, cc_p = paired_diff_ci(y[test], combo_preds, conf[test])
+    cp, cp_lo, cp_hi, cp_p = paired_diff_ci(y[test], combo_preds, test_preds[int(best.layer)])
+    print(f"  combined - confidence: {cc:+.3f}  [{cc_lo:+.3f}, {cc_hi:+.3f}]  p={cc_p:.3f}")
+    print(f"  combined - probe:      {cp:+.3f}  [{cp_lo:+.3f}, {cp_hi:+.3f}]  p={cp_p:.3f}")
+
     bests.append({**best.to_dict(), "stage": stage, "layer": int(best.layer), "diff_vs_conf": diff, "diff_low": d_lo, "diff_high": d_hi, "p": p,
-                  "combo_auroc": c_auc, "combo_ci_low": c_lo, "combo_ci_high": c_hi})
+                  "combo_auroc": c_auc, "combo_ci_low": c_lo, "combo_ci_high": c_hi,
+                  "combo_vs_conf": cc, "combo_vs_conf_low": cc_lo, "combo_vs_conf_high": cc_hi, "combo_vs_conf_p": cc_p,
+                  "combo_vs_probe": cp, "combo_vs_probe_low": cp_lo, "combo_vs_probe_high": cp_hi, "combo_vs_probe_p": cp_p})
 
 # ---------------------------------------------------------------------------
 # 4. Save
