@@ -1,7 +1,10 @@
 import os, sys, json
 import numpy as np
 import pandas as pd
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import OneHotEncoder
 
 from evaluate import auroc_ci
 
@@ -47,6 +50,24 @@ add_result("confidence", conf)      # sanity check: should match probe.py's base
 add_result("margin", -margin)       # small gap -> likely wrong
 add_result("entropy", entropy)      # spread out -> likely wrong
 add_result("length", meta.question_len_tokens.values.astype(float))  # longer -> likely wrong
+
+# ---------------------------------------------------------------------------
+# 3. Simple trained baselines: pick, category, subject (fit on train only)
+# handle_unknown="ignore": a value never seen in train does not crash later.
+# astype(str): pick is 0-3, and should be treated as a category, not a number.
+# ---------------------------------------------------------------------------
+def add_categorical_baseline(column):
+    """Predict wrong/right from one categorical column in meta.csv."""
+    model = make_pipeline(
+        OneHotEncoder(handle_unknown="ignore"),
+        LogisticRegression(max_iter=2000),
+    )
+    X = meta[[column]].astype(str)
+    model.fit(X[train], y[train])
+    add_result(column, model.predict_proba(X)[:, 1])
+
+add_categorical_baseline("pick")
+add_categorical_baseline("category")
 
 # ---------------------------------------------------------------------------
 # 5. Save
