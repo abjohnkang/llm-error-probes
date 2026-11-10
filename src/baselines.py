@@ -1,12 +1,15 @@
 import os, sys, json
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
 import numpy as np
 import pandas as pd
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import OneHotEncoder
 
 from evaluate import auroc_ci
+from data import load_mmlu
 
 # ---------------------------------------------------------------------------
 # 1. Load the saved data (no model needed)
@@ -66,14 +69,28 @@ def add_categorical_baseline(column):
     model.fit(X[train], y[train])
     add_result(column, model.predict_proba(X)[:, 1])
 
-
 add_categorical_baseline("pick")
 add_categorical_baseline("category")
 add_categorical_baseline("subject")
 
 # ---------------------------------------------------------------------------
-# 5. Save
+# 4. Text-only baseline: question text -> wrong/right
+# meta.csv has no question text, so look it up in MMLU by qid
+# (the same dataset and row numbers extract.py used).
+# Settings fixed in advance: word unigrams+bigrams, words in at least 2
+# train questions, default C=1.0. The vocabulary is built from train only.
 # ---------------------------------------------------------------------------
+ds = load_mmlu()
+questions = pd.Series([ds[int(q)]["question"] for q in meta.qid])
+
+text_model = make_pipeline(
+    TfidfVectorizer(ngram_range=(1, 2), min_df=2, sublinear_tf=True),
+    LogisticRegression(max_iter=2000),
+)
+text_model.fit(questions[train], y[train])
+add_result("text_only", text_model.predict_proba(questions)[:, 1])
+
+#save
 out = os.path.join("results", os.path.basename(folder))
 os.makedirs(out, exist_ok=True)
 pd.DataFrame(results).to_csv(os.path.join(out, "baselines.csv"), index=False)
