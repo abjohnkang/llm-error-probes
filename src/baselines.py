@@ -66,8 +66,10 @@ def add_categorical_baseline(column):
     model.fit(X[train], y[train])
     add_result(column, model.predict_proba(X)[:, 1])
 
+
 add_categorical_baseline("pick")
 add_categorical_baseline("category")
+add_categorical_baseline("subject")
 
 # ---------------------------------------------------------------------------
 # 5. Save
