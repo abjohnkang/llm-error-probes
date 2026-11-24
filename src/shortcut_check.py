@@ -10,8 +10,10 @@ first combine confidence with those shortcuts, then check whether adding the
 probe on top still helps.
 """
 import os, sys, json
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
 import numpy as np
 import pandas as pd
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import cross_val_predict
@@ -19,6 +21,7 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import OneHotEncoder
 
 from evaluate import auroc_ci
+from data import load_mmlu
 
 # ---------------------------------------------------------------------------
 # 1. Load the saved data (no model needed)
@@ -73,3 +76,18 @@ subject_model = make_pipeline(OneHotEncoder(handle_unknown="ignore"),
                               LogisticRegression(max_iter=2000))
 subject_train, subject_test = cv_scores("subject", subject_model,
                                         meta[["subject"]].astype(str).values)
+
+# Text: the question AND its four options (baselines.py uses the question only).
+# meta.csv has no text, so look it up in MMLU by qid (the same dataset and row
+# numbers extract.py used). Same TF-IDF settings as baselines.py.
+# Watch the two train numbers: the model scores the questions it was fitted on
+# far too well, because it memorized them. Those are the scores the combiner
+# must never learn from.
+ds = load_mmlu()
+texts = np.array([ds[int(q)]["question"] + " " + " ".join(ds[int(q)]["choices"])
+                  for q in meta.qid], dtype=object)
+text_model = make_pipeline(
+    TfidfVectorizer(ngram_range=(1, 2), min_df=2, sublinear_tf=True),
+    LogisticRegression(max_iter=2000),
+)
+text_train, text_test = cv_scores("text", text_model, texts)
