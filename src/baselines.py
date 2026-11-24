@@ -74,21 +74,25 @@ add_categorical_baseline("category")
 add_categorical_baseline("subject")
 
 # ---------------------------------------------------------------------------
-# 4. Text-only baseline: question text -> wrong/right
+# 4. Text-only baseline: question + options text -> wrong/right
+# The text is the question and its four options, joined with spaces (the same
+# text as in shortcut_check.py). The model sees the options too, so the text
+# should too.
 # meta.csv has no question text, so look it up in MMLU by qid
 # (the same dataset and row numbers extract.py used).
 # Settings fixed in advance: word unigrams+bigrams, words in at least 2
 # train questions, default C=1.0. The vocabulary is built from train only.
 # ---------------------------------------------------------------------------
 ds = load_mmlu()
-questions = pd.Series([ds[int(q)]["question"] for q in meta.qid])
+texts = pd.Series([ds[int(q)]["question"] + " " + " ".join(ds[int(q)]["choices"])
+                   for q in meta.qid])
 
 text_model = make_pipeline(
     TfidfVectorizer(ngram_range=(1, 2), min_df=2, sublinear_tf=True),
     LogisticRegression(max_iter=2000),
 )
-text_model.fit(questions[train], y[train])
-add_result("text_only", text_model.predict_proba(questions)[:, 1])
+text_model.fit(texts[train], y[train])
+add_result("text_only", text_model.predict_proba(texts)[:, 1])
 
 #save
 out = os.path.join("results", os.path.basename(folder))
