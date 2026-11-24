@@ -18,9 +18,9 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import cross_val_predict
 from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import OneHotEncoder
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
-from evaluate import auroc_ci
+from evaluate import auroc_ci, paired_diff_ci
 from data import load_mmlu
 
 # ---------------------------------------------------------------------------
@@ -91,3 +91,43 @@ text_model = make_pipeline(
     LogisticRegression(max_iter=2000),
 )
 text_train, text_test = cv_scores("text", text_model, texts)
+
+# ---------------------------------------------------------------------------
+# 4. Combine confidence + subject + text, and compare to confidence alone
+# Same combiner as in probe.py: standardize, then logistic regression.
+# Subject and text go in as log-odds (conf is already a log), so all inputs
+# are on a log scale, and standardizing keeps any one from being ignored just
+# because its values are spread over a smaller range.
+# ---------------------------------------------------------------------------
+def logit(p):
+    """Probability -> log-odds. Spreads out values near 0 and 1.
+    (Same as in probe.py. Not imported from there: probe.py is a script, so
+    importing it would run it.)"""
+    p = np.clip(p, 1e-6, 1 - 1e-6)
+    return np.log(p / (1 - p))
+
+def combine(name, train_inputs, test_inputs):
+    """Fit the combiner on train, return its test scores, and print its AUROC.
+    Every train input must come from cv_scores (cross-validated)."""
+    combiner = make_pipeline(StandardScaler(), LogisticRegression())
+    combiner.fit(np.column_stack(train_inputs), y[train])
+    scores = combiner.predict_proba(np.column_stack(test_inputs))[:, 1]
+    auc, lo, hi = auroc_ci(y[test], scores)
+    print(f"{name:30s} test AUROC {auc:.3f}  [{lo:.3f}, {hi:.3f}]")
+    # Self-check: the combiner gets confidence as one input, so it should not
+    # do worse than confidence alone. If it does, an input was probably scored
+    # on its own train questions instead of cross-validated.
+    if auc < roc_auc_score(y[test], conf[test]):
+        print("  WARNING: below confidence alone. Is every train input cross-validated?")
+    return scores
+
+def compare(name_a, a, name_b, b):
+    """Paired bootstrap on the same test questions: does a beat b?"""
+    d, lo, hi, p = paired_diff_ci(y[test], a, b)
+    print(f"  {name_a} - {name_b}: {d:+.3f}  [{lo:+.3f}, {hi:+.3f}]  p={p:.3f}")
+
+print()
+shortcuts = combine("conf + subject + text",
+                    [conf[train], logit(subject_train), logit(text_train)],
+                    [conf[test], logit(subject_test), logit(text_test)])
+compare("conf + subject + text", shortcuts, "conf", conf[test])
