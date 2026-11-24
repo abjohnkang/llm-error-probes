@@ -8,6 +8,8 @@ that are easy to get without looking inside the model: which subject the
 question is from, or what the question and its options say. To test this, we
 first combine confidence with those shortcuts, then check whether adding the
 probe on top still helps.
+
+Saves results/<run name>/shortcut_check.csv
 """
 import os, sys, json
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
@@ -46,6 +48,10 @@ probs = np.sort(meta[["pA", "pB", "pC", "pD"]].values, axis=1)
 conf = np.log(probs[:, :3].sum(axis=1))
 auc, lo, hi = auroc_ci(y[test], conf[test])
 print(f"confidence   test AUROC {auc:.3f}  [{lo:.2f}, {hi:.2f}]")
+
+# One row per detector for the results CSV (section 6). Confidence is compared
+# to nothing, so its difference columns stay empty.
+rows = [{"detector": "conf", "auroc": auc, "ci_low": lo, "ci_high": hi}]
 
 # ---------------------------------------------------------------------------
 # 3. Scores for the combiner, made the safe way
@@ -107,7 +113,8 @@ def logit(p):
     return np.log(p / (1 - p))
 
 def combine(name, train_inputs, test_inputs):
-    """Fit the combiner on train, return its test scores, and print its AUROC.
+    """Fit the combiner on train, print its test AUROC, and return
+    (test scores, AUROC, CI low, CI high).
     Every train input must come from cv_scores (cross-validated)."""
     combiner = make_pipeline(StandardScaler(), LogisticRegression())
     combiner.fit(np.column_stack(train_inputs), y[train])
@@ -119,18 +126,21 @@ def combine(name, train_inputs, test_inputs):
     # on its own train questions instead of cross-validated.
     if auc < roc_auc_score(y[test], conf[test]):
         print("  WARNING: below confidence alone. Is every train input cross-validated?")
-    return scores
+    return scores, auc, lo, hi
 
 def compare(name_a, a, name_b, b):
-    """Paired bootstrap on the same test questions: does a beat b?"""
+    """Paired bootstrap on the same test questions: does a beat b?
+    Returns the difference columns for the results CSV."""
     d, lo, hi, p = paired_diff_ci(y[test], a, b)
     print(f"  {name_a} - {name_b}: {d:+.3f}  [{lo:+.3f}, {hi:+.3f}]  p={p:.3f}")
+    return {"compared_to": name_b, "diff": d, "diff_low": lo, "diff_high": hi, "p": p}
 
 print()
-shortcuts = combine("conf + subject + text",
-                    [conf[train], logit(subject_train), logit(text_train)],
-                    [conf[test], logit(subject_test), logit(text_test)])
-compare("conf + subject + text", shortcuts, "conf", conf[test])
+shortcuts, auc, lo, hi = combine("conf + subject + text",
+                                 [conf[train], logit(subject_train), logit(text_train)],
+                                 [conf[test], logit(subject_test), logit(text_test)])
+diff = compare("conf + subject + text", shortcuts, "conf", conf[test])
+rows.append({"detector": "conf + subject + text", "auroc": auc, "ci_low": lo, "ci_high": hi, **diff})
 
 # ---------------------------------------------------------------------------
 # 5. Add the probe on top: does it still help?
@@ -149,7 +159,21 @@ for _, row in best.iterrows():
     Xl = np.asarray(X[:, layer], dtype=np.float32)  # one layer: (questions, 2048)
     probe = make_pipeline(StandardScaler(), LogisticRegression(C=0.01, max_iter=2000))
     probe_train, probe_test = cv_scores("probe", probe, Xl)
-    with_probe = combine("conf + subject + text + probe",
-                         [conf[train], logit(subject_train), logit(text_train), logit(probe_train)],
-                         [conf[test], logit(subject_test), logit(text_test), logit(probe_test)])
-    compare("with probe", with_probe, "conf + subject + text", shortcuts)
+    with_probe, auc, lo, hi = combine("conf + subject + text + probe",
+                                      [conf[train], logit(subject_train), logit(text_train), logit(probe_train)],
+                                      [conf[test], logit(subject_test), logit(text_test), logit(probe_test)])
+    diff = compare("with probe", with_probe, "conf + subject + text", shortcuts)
+    rows.append({"detector": "conf + subject + text + probe", "stage": stage, "layer": layer,
+                 "auroc": auc, "ci_low": lo, "ci_high": hi, **diff})
+
+# ---------------------------------------------------------------------------
+# 6. Save
+# ---------------------------------------------------------------------------
+out = os.path.join("results", run)
+os.makedirs(out, exist_ok=True)
+# Int64 keeps stage and layer as whole numbers, with empty cells where a row has none.
+df = pd.DataFrame(rows).astype({"stage": "Int64", "layer": "Int64"})
+df = df[["detector", "stage", "layer", "auroc", "ci_low", "ci_high",
+         "compared_to", "diff", "diff_low", "diff_high", "p"]]
+df.to_csv(os.path.join(out, "shortcut_check.csv"), index=False)
+print(f"\nsaved {out}/shortcut_check.csv")
