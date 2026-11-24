@@ -131,3 +131,25 @@ shortcuts = combine("conf + subject + text",
                     [conf[train], logit(subject_train), logit(text_train)],
                     [conf[test], logit(subject_test), logit(text_test)])
 compare("conf + subject + text", shortcuts, "conf", conf[test])
+
+# ---------------------------------------------------------------------------
+# 5. Add the probe on top: does it still help?
+# For each stage, use the layer probe.py chose on val (read from probe_best.csv,
+# so no layer number is typed in by hand). Same probe as probe.py (C=0.01).
+# Its train scores are cross-validated too, like every other combiner input.
+# If conf + subject + text + probe beats conf + subject + text, the hidden
+# states hold error information that subject and wording don't explain.
+# ---------------------------------------------------------------------------
+run = os.path.basename(folder)
+best = pd.read_csv(os.path.join("results", run, "probe_best.csv"))
+for _, row in best.iterrows():
+    stage, layer = int(row.stage), int(row.layer)
+    print(f"\nstage {stage}, layer {layer}")
+    X = np.load(os.path.join(folder, f"stage{stage}.npy"), mmap_mode="r")
+    Xl = np.asarray(X[:, layer], dtype=np.float32)  # one layer: (questions, 2048)
+    probe = make_pipeline(StandardScaler(), LogisticRegression(C=0.01, max_iter=2000))
+    probe_train, probe_test = cv_scores("probe", probe, Xl)
+    with_probe = combine("conf + subject + text + probe",
+                         [conf[train], logit(subject_train), logit(text_train), logit(probe_train)],
+                         [conf[test], logit(subject_test), logit(text_test), logit(probe_test)])
+    compare("with probe", with_probe, "conf + subject + text", shortcuts)
